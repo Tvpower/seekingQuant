@@ -1,100 +1,232 @@
-## Seeking Alpha Quant Portfolio Scraper
+## Seeking Alpha Quant Portfolio Scraper & Automated Trading System
 
-Minimal Selenium scraper for Seeking Alpha Quant Portfolio pages. It supports multiple table formats and can filter portfolio movements to just the most recent Friday.
+Playwright-based scraper for Seeking Alpha Pro Quant Portfolio with IBKR integration for automated trading. Supports multiple table formats, persistent login sessions, and fully automated execution.
 
 ### Features
-- Handles multiple table structures (`table-body-infinite` and `table-body`) with fallback logic
-- Robust ticker extraction from `portfolio-ticker-link`
-- Extracts columns: `Symbol`, `Date`, `Action`, `Weight`, `Price`
-- Optional filtering to only the last Friday before today
-- Local HTML test mode for quick validation
-- Saves debug artifacts on failure (screenshot and page source)
+- **Persistent Sessions**: Login once, reuse session across runs (saved in `~/.playwright_seeking_alpha_profile`)
+- **Multiple Table Support**: Handles both `table-body-infinite` and `table-body` selectors with fallback logic
+- **Three Scraping Modes**:
+  - Current picks (all 30 stocks in portfolio)
+  - Latest portfolio movements (most recent date only)
+  - All portfolio history
+- **Anti-Bot Detection**: Stealth techniques to bypass automation detection
+- **Automated Trading**: Direct integration with Interactive Brokers (IBKR) for automated order execution
+- **Headless Mode**: Run completely in background for cron jobs/automation
+- **Manual Mode**: Visual browser for initial login and debugging
 
 ### Requirements
 - Python 3.8+
-- Google Chrome/Brave (project is set up for Brave)
-- `chromedriver` compatible with your browser (handled by `undetected-chromedriver`)
+- Interactive Brokers account (for trading integration)
+- Seeking Alpha Pro subscription
 
-Python deps (see `requirements.txt`):
-- selenium
-- undetected-chromedriver
+Python dependencies (see `requirements.txt`):
+- playwright
 - pandas
+- ibapi (Interactive Brokers API)
 
-### Quick Start
-1) Create and activate a virtual environment
+### Installation
+
+1) Create and activate virtual environment
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2) Configure browser paths in `scraper.py`
-- `BROWSER_USER_DATA_DIR` (e.g., `/home/<user>/.config/BraveSoftware/Brave-Browser`)
-- `BROWSER_PROFILE_NAME` (usually `Default`)
-- `BROWSER_EXECUTABLE_PATH` (e.g., `/opt/brave.com/brave/brave`)
-- `USE_EXISTING_SESSION` (True to attach to a running browser; False to launch a new one)
-- `REMOTE_DEBUGGING_PORT` (default `9222`)
-
-3) If using an existing session, start Brave with remote debugging first
+2) Install Playwright browsers
 ```bash
-brave --remote-debugging-port=9222
-``
-# This was a test with a downloaded version of brave from snap which didnt work for me.
+playwright install chromium
+```
 
-4) Run the scraper
+3) Configure IBKR connection in `main.py`
+```python
+TRADE_AMOUNT = 500          # Dollar amount per trade
+IBKR_PORT = 7497           # 7497 for paper, 7496 for live
+IBKR_CLIENT_ID = 0         # Your client ID
+```
+
+### First-Time Setup
+
+**Login to Seeking Alpha (one-time setup):**
 ```bash
-# Default: scrapes current picks page
-python scraper.py
+python seeking_alpha_scrape/scraper.py 1
+```
 
-# Disable date filtering / fetch all rows where applicable
-python scraper.py --all
+This will:
+1. Open a browser window
+2. Navigate to Seeking Alpha
+3. Prompt you to login with your credentials
+4. Save the session to `~/.playwright_seeking_alpha_profile`
+
+After successful login, the scraper will run in automated/headless mode for all future runs.
+
+### Usage
+
+#### Standalone Scraper (Manual Testing)
+
+```bash
+# Scrape current picks (30 stocks)
+python seeking_alpha_scrape/scraper.py 1
+
+# Scrape latest portfolio movements
+python seeking_alpha_scrape/scraper.py 2
+
+# Scrape all portfolio history
+python seeking_alpha_scrape/scraper.py 3
+```
+
+#### Automated Trading (Headless)
+
+```bash
+# Default: scrape latest movements and execute trades
+python main.py
+
+# Use current portfolio picks for trading
+python main.py --current
+
+# Use all history movements for trading
+python main.py --all
+```
+
+#### Programmatic Integration
+
+```python
+from seeking_alpha_scrape.scraper import get_portfolio_data_automated
+
+# Get current picks (headless, fully automated)
+picks = get_portfolio_data_automated('current_picks', headless=True)
+
+# Get latest movements
+movements = get_portfolio_data_automated('latest_history', headless=True)
+
+# Get all history
+history = get_portfolio_data_automated('all_history', headless=True)
 ```
 
 ### Pages Supported
-- Current picks (default):
-  - `https://seekingalpha.com/pro-quant-portfolio/picks/current`
-- Portfolio history (still supported by the scraper):
-  - `https://seekingalpha.com/pro-quant-portfolio/portfolio-history`
 
-Switch pages by changing `portfolio_url` in `scraper.py`.
+- **Current Picks**: `https://seekingalpha.com/pro-quant-portfolio/picks/current`
+  - All 30 stocks currently in the Pro Quant Portfolio
+  - Columns: Company, Symbol, Picked Price, Sector, Weight, Quant Rating, Price Return
 
-### Output
-- Prints a pandas DataFrame to stdout with the extracted data. Typical columns:
-  - `Symbol`: stock ticker (e.g., W, NEM)
-  - `Date`: transaction date (present on history pages)
-  - `Action`: Buy/Sell/Rebalance (present on history pages)
-  - `Weight`: portfolio weight or weight change (percentage)
-  - `Price`: price per share (currency or numeric string)
+- **Portfolio History**: `https://seekingalpha.com/pro-quant-portfolio/portfolio-history`
+  - Buy/Sell/Rebalance movements
+  - Columns: Symbol, Date, Action, Starting Weight, New Weight, Change In Weight, Price/Share
 
 ### How It Works
-- The scraper waits for one of these selectors (in order):
-  - `tbody[data-test-id="table-body-infinite"]`
-  - `tbody[data-test-id="table-body"]`
-- It extracts rows and uses multiple strategies to obtain the ticker from the first cells via `data-test-id="portfolio-ticker-link"` or link `href`.
-- It heuristically finds `Price`/`Weight` by content (e.g., `$`, `%`) and falls back to common column positions.
 
-### Last Friday Filter
-- By default the scraper filters rows to only the most recent Friday before today (relevant for the portfolio history page).
-- Disable the filter with `--all`.
+#### Scraping Process
+1. **Browser Launch**: Playwright launches Chromium with persistent context
+2. **Session Restoration**: Loads saved cookies/session from profile directory
+3. **Login Check**: Automatically detects if login is valid by checking for table presence
+4. **Data Extraction**: Parses table rows using selectors:
+   - `tbody[data-test-id="table-body-infinite"]` (primary)
+   - `tbody[data-test-id="table-body"]` (fallback)
+5. **Data Processing**: Extracts and formats data for trading system
 
-### Debug Artifacts
-On errors, the scraper writes:
-- `error_screenshot.png`: screenshot of the page
-- `debug_page_source.html`: full HTML source
-- `debug_row_*.html`: snippets of problematic rows (when encountered)
+#### Trading Integration
+1. **Scrape**: Get latest portfolio movements
+2. **Convert**: Transform movements to BUY/SELL actions
+3. **Connect**: Establish connection to IBKR via TWS/Gateway
+4. **Execute**: Place dollar-based market orders for each action
+5. **Disconnect**: Clean up connection
+
+#### Anti-Detection Features
+- Overrides `navigator.webdriver` property
+- Custom user agent
+- Disables automation flags
+- Mimics real browser behavior
+- Persistent profile with real browsing history
+
+### Configuration
+
+Located in `seeking_alpha_scrape/scraper.py`:
+
+```python
+TEMP_PROFILE_DIR = "~/.playwright_seeking_alpha_profile"  # Session storage
+CURRENT_PICKS_URL = "https://seekingalpha.com/pro-quant-portfolio/picks/current"
+PORTFOLIO_HISTORY_URL = "https://seekingalpha.com/pro-quant-portfolio/portfolio-history"
+```
+
+Located in `main.py`:
+
+```python
+TRADE_AMOUNT = 500      # Dollar amount per trade
+IBKR_PORT = 7497       # 7497 paper, 7496 live
+IBKR_CLIENT_ID = 0     # Your IBKR client ID
+```
+
+### Output Format
+
+#### Current Picks
+```
+Company, Symbol, Picked Price, Sector, Weight, Quant Rating, Price Return
+```
+
+#### Portfolio History (Latest)
+```
+Symbol, Date, Action, Starting Weight, New Weight, Change In Weight, Price/Share
+```
+
+#### Trading Format (Converted)
+```
+Symbol, Action (BUY/SELL), Weight, Change, Date
+```
 
 ### Troubleshooting
-- `python: command not found`: use `python3` and ensure your venv is activated
-- Cannot attach to existing browser:
-  - Ensure Brave is running with `--remote-debugging-port=9222`
-  - Or set `USE_EXISTING_SESSION = False` to launch a new instance
-- Driver initialization issues:
-  - The code already retries with version hints and cache clear; verify your Brave/Chrome version if problems persist
-- No rows found:
-  - The page may have changed; inspect `debug_page_source.html` and adjust selectors
+
+**Login Required Warning**
+- Run `python seeking_alpha_scrape/scraper.py 1` manually to login
+- Ensure you can see the portfolio table before pressing Enter
+
+**Table Not Found**
+- Check if Seeking Alpha changed their HTML structure
+- Verify your Pro subscription is active
+- Try clearing profile: `rm -rf ~/.playwright_seeking_alpha_profile`
+
+**IBKR Connection Failed**
+- Ensure TWS or IB Gateway is running
+- Check port configuration (7497 for paper trading)
+- Verify client ID is not already in use
+- Enable API connections in TWS settings
+
+**Playwright Errors**
+- Reinstall browsers: `playwright install chromium`
+- Check permissions on profile directory
+
+**Headless Mode Not Working**
+- Some sites detect headless mode; try with `headless=False` for debugging
+- Check if profile directory has proper permissions
+
+### Project Structure
+
+```
+SeekingQuant/
+├── main.py                          # Main trading orchestration
+├── requirements.txt                 # Python dependencies
+├── README.md                        # This file
+├── seeking_alpha_scrape/
+│   ├── scraper.py                   # Playwright scraper with automation
+│   └── html-sample/                 # Sample HTML for testing
+└── trade_dirs/
+    └── trader.py                    # IBKR API integration
+```
+
+### Automation with Cron
+
+Run daily at market close:
+
+```bash
+# Add to crontab
+0 16 * * 1-5 cd /home/user/PycharmProjects/SeekingQuant && .venv/bin/python main.py >> logs/trading.log 2>&1
+```
 
 ### Notes
-- Respect Seeking Alpha’s Terms of Service when scraping.
-- This project is intended for personal/educational purposes.
+
+- Respect Seeking Alpha's Terms of Service
+- Use paper trading account for testing
+- Monitor trades carefully in production
+- This is for educational/personal use only
+- Past performance does not guarantee future results
 
 

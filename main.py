@@ -7,7 +7,7 @@ import pandas as pd
 # sys.path adjusted: use packages
 
 # Import from other project files
-from seeking_alpha_scrape.scraper import setup_driver, scrape_portfolio_data, test_html_parsing, BROWSER_USER_DATA_DIR, BROWSER_PROFILE_NAME, BROWSER_EXECUTABLE_PATH, USE_EXISTING_SESSION, REMOTE_DEBUGGING_PORT
+from seeking_alpha_scrape.scraper import get_portfolio_data_automated, scrape_portfolio_data, test_html_parsing
 from trade_dirs.trader import IBKR_API, run_loop
 
 
@@ -53,20 +53,17 @@ def main():
         test_html_parsing()
         return
 
-    # Determine if we should filter the scraped data
-    filter_to_recent = "--all" not in sys.argv
+    # Determine scrape type based on arguments
+    scrape_type = 'latest_history'  # Default: scrape latest movements for trading
+    if "--all" in sys.argv:
+        scrape_type = 'all_history'
+    elif "--current" in sys.argv:
+        scrape_type = 'current_picks'
 
-    driver = None
     try:
-        # Step 1: Set up and run the scraper
-        driver = setup_driver(
-            BROWSER_USER_DATA_DIR,
-            BROWSER_PROFILE_NAME,
-            BROWSER_EXECUTABLE_PATH,
-            USE_EXISTING_SESSION,
-            REMOTE_DEBUGGING_PORT
-        )
-        portfolio_data = scrape_portfolio_data(driver, filter_to_recent=filter_to_recent)
+        # Step 1: Scrape portfolio data (fully automated, headless)
+        print(f"--- Scraping Portfolio Data ({scrape_type}) ---")
+        portfolio_data = get_portfolio_data_automated(scrape_type=scrape_type, headless=True)
 
         # Step 2: If scraping is successful, run the trading logic
         if portfolio_data:
@@ -79,13 +76,6 @@ def main():
 
     except Exception as e:
         print(f"An error occurred in the main process: {e}")
-    finally:
-        # Step 3: Clean up and close the browser
-        if driver and not USE_EXISTING_SESSION:
-            print("\nClosing the browser.")
-            driver.quit()
-        elif driver and USE_EXISTING_SESSION:
-             print("\nScript finished. Browser session remains open.")
 
 
 if __name__ == "__main__":

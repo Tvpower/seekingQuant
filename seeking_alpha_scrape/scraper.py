@@ -1,475 +1,571 @@
-import time
-import sys
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import os
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-import pandas as pd
+from playwright.sync_api import sync_playwright
+
+# --- Configuration ---
+# For Snap browsers, we'll use a temporary profile and copy cookies
+USE_EXISTING_SESSION = False  # Using fresh Chromium with copied cookies/state
+
+BROWSER_USER_DATA_DIR = os.path.expanduser("~/snap/brave/current/.config/BraveSoftware/Brave-Browser")  # Brave profile directory
+BROWSER_PROFILE_NAME = "Default"  # Brave profile name
+TEMP_PROFILE_DIR = os.path.expanduser("~/.playwright_seeking_alpha_profile")  # Temporary profile
+REMOTE_DEBUGGING_PORT = None  # Not needed for Playwright
+BROWSER_EXECUTABLE_PATH = None  # Use Playwright's Chromium
+
+# URLs
+CURRENT_PICKS_URL = "https://seekingalpha.com/pro-quant-portfolio/picks/current"
+PORTFOLIO_HISTORY_URL = "https://seekingalpha.com/pro-quant-portfolio/portfolio-history"
 
 
-
-
-def prompt_if_tty(message: str) -> str:
-    """Prompt user only if running in an interactive TTY; otherwise skip."""
+def check_if_login_needed(page):
+    """
+    Check if user needs to login to Seeking Alpha.
+    Returns True if login is needed, False if already logged in.
+    """
     try:
-        if sys.stdin is not None and sys.stdin.isatty():
-            return input(message)
-        # non-interactive context: skip prompt
-        print(f"{message} [skipped: non-interactive]")
-        return ""
-    except Exception:
-        # in case stdin is closed or any error occurs, skip
-        return ""
-
-# --- User config ---
-# 1. Path to your Browser user data directory (parent of profile folders).
-#    Linux example: "/home/username/.config/BraveSoftware/Brave-Browser"
-BROWSER_USER_DATA_DIR = r"/home/tvpower/.config/BraveSoftware/Brave-Browser"
-
-# 2. Profile directory name (usually "Default" for main profile)
-BROWSER_PROFILE_NAME = "Default"
-
-# 3. Path to the browser executable file.
-#    Linux example: "/opt/brave.com/brave/brave"
-BROWSER_EXECUTABLE_PATH = r"/opt/brave.com/brave/brave"
-
-# 4. Option to connect to existing browser session (recommended)
-USE_EXISTING_SESSION = False
-REMOTE_DEBUGGING_PORT = 9222
-
-
-def setup_driver(user_data_dir, profile_name, executable_path, use_existing=True, debug_port=9222):
-    """ Setup the Selenium webdriver instance with a given profile. """
-    if not user_data_dir or not os.path.isdir(user_data_dir):
-        raise FileNotFoundError(f"browser's user data directory not found: {user_data_dir}")
-    if not executable_path or not os.path.isfile(executable_path):
-        raise FileNotFoundError(f"browser's executable path not found: {executable_path}")
-
-    options = uc.ChromeOptions()
-    options.binary_location = executable_path
-
-    if use_existing:
-        # Connect to existing browser session
-        options.add_argument(f"--remote-debugging-port={debug_port}")
-        options.add_experimental_option("debuggerAddress", f"127.0.0.1:{debug_port}")
-        print(f"Attempting to connect to existing browser on port {debug_port}")
-        print("Make sure Brave is running with: brave --remote-debugging-port=9222")
-    else:
-        # Start new browser with profile
-        options.add_argument(f"--user-data-dir={user_data_dir}")
-        options.add_argument(f"--profile-directory={profile_name}")
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-gpu")  # save server resources
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-web-security")  # helps with some compatibility issues
-        options.add_argument("--disable-features=VizDisplayCompositor")  # compatibility fix
-
-    print(f"Using browser's user data directory: {user_data_dir}")
-    print(f"Using browser's profile: {profile_name}")
-    print(f"Using browser's executable path: {executable_path}")
-
-    try:
-        if use_existing:
-            # For existing session, we don't need version matching
-            print("Connecting to existing browser session...")
-            driver = uc.Chrome(options=options)
-            return driver
-        else:
-            # Method 1: Try with specific version matching your browser (139)
-            print("Attempting to create driver with version 139...")
-            driver = uc.Chrome(options=options, version_main=139)
-            return driver
-    except Exception as e:
-        if use_existing:
-            print(f"clearto existing session: {e}")
-            print("Make sure Brave is running with: brave --remote-debugging-port=9222")
-            print("Or set USE_EXISTING_SESSION = False to start a new browser instance")
-            raise
-        else:
-            print(f"Version 139 failed: {e}")
-
-            try:
-                # Method 2: Clear cache and retry with version 139
-                import shutil
-                cache_dir = os.path.expanduser("~/.local/share/undetected_chromedriver")
-                if os.path.exists(cache_dir):
-                    print("Clearing ChromeDriver cache...")
-                    shutil.rmtree(cache_dir)
-
-                print("Retrying with version 139 after cache clear...")
-                driver = uc.Chrome(options=options, version_main=139)
-                return driver
-            except Exception as e2:
-                print(f"Cache clear and version 139 failed: {e2}")
-
-                try:
-                    # Method 3: Let undetected-chromedriver auto-download compatible version
-                    print("Attempting auto version detection...")
-                    driver = uc.Chrome(options=options, version_main=None)
-                    return driver
-                except Exception as e3:
-                    print(f"Auto version detection failed: {e3}")
-                    raise Exception("All ChromeDriver initialization methods failed")
+        # Navigate to the picks page
+        page.goto(CURRENT_PICKS_URL, timeout=30000)
+        page.wait_for_timeout(2000)
+        
+        # Check if we're redirected to login or see login-related elements
+        current_url = page.url
+        
+        # If we're on a login page or see login prompts
+        if 'login' in current_url.lower() or 'sign-in' in current_url.lower():
+            return True
+        
+        # Check for subscription/paywall
+        if page.locator('text=/subscribe|sign up|create account/i').count() > 0:
+            return True
+        
+        # Check for both table selectors (infinite and regular)
+        if page.locator('tbody[data-test-id="table-body"]').count() > 0:
+            return False
+        if page.locator('tbody[data-test-id="table-body-infinite"]').count() > 0:
+            return False
+        
+        # Default to needing login
+        return True
+    except:
+        return True
 
 
-def get_last_friday():
-    """Get the date of the last Friday before today"""
-    today = datetime.now()
-    # Calculate days back to Friday (weekday 4)
-    days_back = (today.weekday() - 4) % 7
-    if days_back == 0 and today.weekday() == 4:
-        # If today is Friday, use today
-        last_friday = today
-    else:
-        # Otherwise, go back to the most recent Friday
-        if days_back == 0:
-            days_back = 7
-        last_friday = today - timedelta(days=days_back)
+def setup_driver(user_data_dir, profile_name, executable_path, use_existing_session, remote_debugging_port=None, headless=False):
+    """
+    Set up Playwright browser with stealth mode using persistent context.
     
-    return last_friday.strftime("%-m/%-d/%Y")  # Format like "9/5/2025"
-
-
-def scrape_portfolio_data(driver, filter_to_recent=True):
-    """Go to the QUANT PRO portfolio page and scrape the data stock data"""
-    portfolio_url = "https://seekingalpha.com/pro-quant-portfolio/portfolio-history"  # placeholder for now need to update with actual url
-    driver.get(portfolio_url)
-    print(f"Navigating to {portfolio_url}")
-
-    # Initial short wait for page navigation; specific table waits occur below
-    time.sleep(1)
-
-    # Check if we're logged in by looking for common login indicators
-    try:
-        # Check current URL to see if we were redirected to login
-        current_url = driver.current_url
-        print(f"Current URL: {current_url}")
-
-        if "login" in current_url.lower() or "signin" in current_url.lower():
-            print("⚠️  Appears to be redirected to login page. You may need to log in manually.")
-            input("Please log in manually in the browser window, then press Enter to continue...")
-    except Exception as e:
-        print(f"Could not check login status: {e}")
-
-    holdings_data = []
+    Args:
+        user_data_dir: Path to Chrome user data directory
+        profile_name: Chrome profile name to use
+        executable_path: Path to Chrome executable
+        use_existing_session: Whether to use persistent browser context
+        remote_debugging_port: Not used in Playwright (kept for compatibility)
+        headless: Whether to run browser in headless mode (for automation)
     
-    # Get the target date for filtering
-    target_date = get_last_friday() if filter_to_recent else None
-    if filter_to_recent:
-        print(f"Filtering data for last Friday: {target_date}")
-
-    try:
-        # Try multiple table body selectors to handle different page formats
-        table_body_selectors = [
-            'tbody[data-test-id="table-body-infinite"]',  # Format used in example.html
-            'tbody[data-test-id="table-body"]'            # Format used in debug_page_source.html
-        ]
+    Returns:
+        tuple: (playwright, context, page)
+    """
+    playwright = sync_playwright().start()
+    
+    # Use a dedicated profile directory for Seeking Alpha scraping
+    profile_path = TEMP_PROFILE_DIR
+    os.makedirs(profile_path, exist_ok=True)
+    
+    if not headless:
+        print(f"Launching browser with persistent profile: {profile_path}")
+        print("This profile will save your login session for future runs.")
+    
+    # Launch browser with persistent context (saves login between runs)
+    context = playwright.chromium.launch_persistent_context(
+        profile_path,
+        headless=headless,  # Configurable headless mode
+        args=[
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+        ],
+        ignore_default_args=['--enable-automation'],
+        viewport={'width': 1920, 'height': 1080},
+        user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    )
+    
+    # Get or create a page
+    if len(context.pages) > 0:
+        page = context.pages[0]
+    else:
+        page = context.new_page()
+    
+    # Apply stealth techniques via JavaScript
+    page.add_init_script("""
+        // Overwrite the `navigator.webdriver` property
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => false,
+        });
         
-        table_body_selector = None
-        for selector in table_body_selectors:
-            try:
-                print(f"Trying table selector: {selector}")
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                )
-                table_body_selector = selector
-                print(f"Found table with selector: {table_body_selector}")
-                break
-            except:
-                print(f"Selector {selector} not found, trying next...")
-                continue
+        // Overwrite the `plugins` property to use a custom getter
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5],
+        });
         
-        if not table_body_selector:
-            raise Exception("Could not find table with any of the expected selectors")
+        // Overwrite the `languages` property
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+        });
         
-        print("Portfolio holdings table is visible.")
+        // Pass the Chrome Test
+        window.chrome = {
+            runtime: {},
+        };
+        
+        // Pass the Permissions Test
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
+    """)
+    
+    return (playwright, context, page)
 
-        # need to add this delay to make sure all the dynamic content loads
-        time.sleep(5)
 
-        rows = driver.find_elements(By.CSS_SELECTOR, f"{table_body_selector} tr")
-
-        if not rows:
-            print("Couldn't find any rows in the table. Page structure might have changed.")
-            print("Let's check what's actually on the page...")
-            print("Page title:", driver.title)
-            # Save screenshot for debugging
+def scrape_current_picks(page, navigate=True):
+    """
+    Scrape current picks from Seeking Alpha Pro Quant Portfolio.
+    URL: https://seekingalpha.com/pro-quant-portfolio/picks/current
+    
+    Args:
+        navigate: If True, navigate to the page. If False, assume already on the page.
+    
+    Returns:
+        list: List of dictionaries with: company, symbol, picked_price, sector, weight, quant_rating, price_return
+    """
+    if navigate:
+        print(f"\nNavigating to: {CURRENT_PICKS_URL}")
+        page.goto(CURRENT_PICKS_URL, wait_until='networkidle', timeout=60000)
+        page.wait_for_timeout(3000)
+    
+    # Try both table selectors
+    selectors = [
+        'tbody[data-test-id="table-body-infinite"]',
+        'tbody[data-test-id="table-body"]'
+    ]
+    
+    table_data = []
+    
+    for selector in selectors:
+        print(f"\nLooking for table with selector: {selector}")
+        
+        if page.locator(selector).count() == 0:
+            print(f"No table found with selector: {selector}")
+            continue
+        
+        print(f"Found table with selector: {selector}")
+        rows = page.locator(f"{selector} tr").all()
+        print(f"Found {len(rows)} rows")
+        
+        for i, row in enumerate(rows):
             try:
-                driver.save_screenshot("debug_screenshot.png")
-                print("Screenshot saved as debug_screenshot.png")
-            except:
-                pass
-            return None
-
-        print(f"Found {len(rows)} rows in the table. Extracting data...")
-
-        # Batch collect cells for all rows once
-        rows_cells = [row.find_elements(By.CSS_SELECTOR, "th, td") for row in rows]
-
-        def extract_symbol(cells):
-            try:
-                if not cells:
-                    return None
-                # Try common locations/selectors first
-                for idx in [0, 1]:
-                    if idx < len(cells):
-                        try:
-                            el = cells[idx].find_element(By.CSS_SELECTOR, '[data-test-id="portfolio-ticker-link"]')
-                            text = el.text.strip()
-                            if text:
-                                return text
-                        except:
-                            pass
-                # Fallback: any anchor text
-                for idx in [0, 1]:
-                    if idx < len(cells):
-                        try:
-                            el = cells[idx].find_element(By.CSS_SELECTOR, 'a')
-                            text = el.text.strip()
-                            if text:
-                                return text
-                            href = el.get_attribute('href') or ''
-                            if '/symbol/' in href:
-                                return href.split('/symbol/')[1].split('#')[0].split('?')[0]
-                        except:
-                            pass
-                return None
-            except:
-                return None
-
-        def extract_date(cells):
-            try:
-                for cell in cells:
-                    text = (cell.text or '').strip()
-                    if '/' in text and any(ch.isdigit() for ch in text):
-                        try:
-                            datetime.strptime(text, "%m/%d/%Y")
-                            return text
-                        except:
-                            continue
-                return None
-            except:
-                return None
-
-        def extract_price(cells):
-            try:
-                # Pattern-based
-                for cell in cells:
-                    text = (cell.text or '').strip()
-                    if '$' in text and '.' in text and '%' not in text:
-                        return text
-                # Positional fallback
+                cells = row.locator('td').all()
+                if len(cells) < 5:
+                    continue
+                
+                row_data = {}
+                
+                # Column 0: Company name (link)
+                company_link = cells[0].locator('a').first
+                if company_link.count() > 0:
+                    row_data['company'] = company_link.inner_text().strip()
+                else:
+                    row_data['company'] = cells[0].inner_text().strip()
+                
+                # Column 1: Symbol
+                row_data['symbol'] = cells[1].inner_text().strip()
+                
+                # Column 2: Picked Price (may contain date + price)
+                picked_text = cells[2].inner_text().strip()
+                row_data['picked_price'] = picked_text
+                
+                # Column 3: Sector
+                row_data['sector'] = cells[3].inner_text().strip()
+                
+                # Column 4: Weight (percentage)
+                row_data['weight'] = cells[4].inner_text().strip()
+                
+                # Column 5: Quant Rating (if exists)
+                if len(cells) > 5:
+                    row_data['quant_rating'] = cells[5].inner_text().strip()
+                
+                # Column 6: Price Return (if exists)
                 if len(cells) > 6:
-                    return (cells[6].text or '').strip()
-                return "N/A"
-            except:
-                return "N/A"
-
-        def extract_weight(cells):
-            try:
-                for cell in cells:
-                    text = (cell.text or '').strip()
-                    if '%' in text and '$' not in text and '/' not in text:
-                        return text
-                for idx in [3, 4, 5]:
-                    if idx < len(cells):
-                        text = (cells[idx].text or '').strip()
-                        if '%' in text and '/' not in text:
-                            return text
-                return "N/A"
-            except:
-                return "N/A"
-
-        def extract_action(cells):
-            try:
-                for cell in cells:
-                    text = (cell.text or '').strip()
-                    if text in ['Buy', 'Sell', 'Rebalance']:
-                        return text
-                return "N/A"
-            except:
-                return "N/A"
-
-        # Parallel extraction
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            symbol_futures = [executor.submit(extract_symbol, cells) for cells in rows_cells]
-            date_futures = [executor.submit(extract_date, cells) for cells in rows_cells]
-            price_futures = [executor.submit(extract_price, cells) for cells in rows_cells]
-            weight_futures = [executor.submit(extract_weight, cells) for cells in rows_cells]
-            action_futures = [executor.submit(extract_action, cells) for cells in rows_cells]
-
-            symbols = [f.result() for f in symbol_futures]
-            dates = [f.result() for f in date_futures]
-            prices = [f.result() for f in price_futures]
-            weights = [f.result() for f in weight_futures]
-            actions = [f.result() for f in action_futures]
-
-        for idx, cells in enumerate(rows_cells):
-            symbol = symbols[idx]
-            if not symbol:
+                    row_data['price_return'] = cells[6].inner_text().strip()
+                
+                if row_data.get('symbol'):
+                    table_data.append(row_data)
+                    print(f"Row {i}: {row_data['symbol']} - {row_data.get('company', 'N/A')} - Weight: {row_data.get('weight', 'N/A')}")
+                
+            except Exception as e:
+                print(f"Error processing row {i}: {e}")
                 continue
-            row_date = dates[idx]
-            if filter_to_recent and target_date and row_date != target_date:
+        
+        if table_data:
+            break
+    
+    print(f"\n=== Scraped {len(table_data)} picks ===\n")
+    return table_data
+
+
+def scrape_portfolio_history(page, filter_last_friday=True):
+    """
+    Scrape portfolio history from Seeking Alpha Pro Quant Portfolio.
+    URL: https://seekingalpha.com/pro-quant-portfolio/portfolio-history
+    
+    Args:
+        filter_last_friday: If True, only return the most recent date's movements
+    
+    Returns:
+        list: List of dictionaries with: symbol, date, action, starting_weight, new_weight, change_weight, price_share
+    """
+    print(f"\nNavigating to: {PORTFOLIO_HISTORY_URL}")
+    page.goto(PORTFOLIO_HISTORY_URL, wait_until='networkidle', timeout=60000)
+    page.wait_for_timeout(3000)
+    
+    # Try both table selectors
+    selectors = [
+        'tbody[data-test-id="table-body-infinite"]',
+        'tbody[data-test-id="table-body"]'
+    ]
+    
+    table_data = []
+    
+    for selector in selectors:
+        print(f"\nLooking for table with selector: {selector}")
+        
+        if page.locator(selector).count() == 0:
+            print(f"No table found with selector: {selector}")
+            continue
+        
+        print(f"Found table with selector: {selector}")
+        rows = page.locator(f"{selector} tr").all()
+        print(f"Found {len(rows)} rows")
+        
+        latest_date = None
+        
+        for i, row in enumerate(rows):
+            try:
+                cells = row.locator('td').all()
+                if len(cells) < 7:
+                    continue
+                
+                row_data = {}
+                
+                # Column 0: Symbol
+                row_data['symbol'] = cells[0].inner_text().strip()
+                
+                # Column 1: Date
+                row_data['date'] = cells[1].inner_text().strip()
+                
+                # Track the latest date
+                if latest_date is None:
+                    latest_date = row_data['date']
+                
+                # Column 2: Action (Buy/Sell/Rebalance)
+                row_data['action'] = cells[2].inner_text().strip()
+                
+                # Column 3: Starting Weight %
+                row_data['starting_weight'] = cells[3].inner_text().strip()
+                
+                # Column 4: New Weight %
+                row_data['new_weight'] = cells[4].inner_text().strip()
+                
+                # Column 5: Change In Weight %
+                row_data['change_weight'] = cells[5].inner_text().strip()
+                
+                # Column 6: Price/Share
+                row_data['price_share'] = cells[6].inner_text().strip()
+                
+                if row_data.get('symbol'):
+                    table_data.append(row_data)
+                    print(f"Row {i}: {row_data['symbol']} - {row_data['date']} - {row_data['action']} - Change: {row_data.get('change_weight', 'N/A')}")
+                
+            except Exception as e:
+                print(f"Error processing row {i}: {e}")
                 continue
-            holding = {
+        
+        if table_data:
+            break
+    
+    # Filter to only the latest date if requested
+    if filter_last_friday and latest_date and table_data:
+        filtered_data = [row for row in table_data if row['date'] == latest_date]
+        print(f"\n=== Filtered to latest date ({latest_date}): {len(filtered_data)} movements ===\n")
+        return filtered_data
+    
+    print(f"\n=== Scraped {len(table_data)} history entries ===\n")
+    return table_data
+
+
+def scrape_portfolio_data(driver_tuple, filter_to_recent=True):
+    """
+    Scrape portfolio data from Seeking Alpha Pro Quant Portfolio.
+    This function scrapes the portfolio history (movements).
+    
+    Args:
+        driver_tuple: Tuple of (playwright, context, page)
+        filter_to_recent: If True, only return the latest date's movements
+    
+    Returns:
+        list: List of dictionaries with portfolio history data formatted for trading
+    """
+    _, _, page = driver_tuple
+    
+    # Scrape portfolio history (movements like Buy/Sell/Rebalance)
+    history_data = scrape_portfolio_history(page, filter_last_friday=filter_to_recent)
+    
+    # Convert to format expected by trading system
+    # The trading system expects: Symbol, Action (BUY/SELL)
+    trading_data = []
+    
+    for entry in history_data:
+        symbol = entry.get('symbol', '')
+        action = entry.get('action', '').upper()
+        change_weight = entry.get('change_weight', '0%')
+        
+        # Determine if we should BUY or SELL based on action and weight change
+        if 'BUY' in action:
+            trading_action = 'BUY'
+        elif 'SELL' in action:
+            trading_action = 'SELL'
+        elif 'REBALANCE' in action:
+            # For rebalance, determine action from weight change
+            change_val = float(change_weight.replace('%', '').replace('+', ''))
+            if change_val > 0.1:  # Threshold for buying more
+                trading_action = 'BUY'
+            elif change_val < -0.1:  # Threshold for selling
+                trading_action = 'SELL'
+            else:
+                trading_action = 'HOLD'  # Minor rebalance, skip
+        else:
+            trading_action = 'HOLD'
+        
+        if trading_action in ['BUY', 'SELL']:
+            trading_data.append({
                 'Symbol': symbol,
-                'Date': row_date or "N/A",
-                'Action': actions[idx] or "N/A",
-                'Weight': weights[idx] or "N/A",
-                'Price': prices[idx] or "N/A"
-            }
-            holdings_data.append(holding)
-    except Exception as e:
-        print(f"Error while scraping: {e}")
-        print("Let's see what's on the page...")
-        print("Page title:", driver.title)
-        print("Current URL:", driver.current_url)
-        # Save screenshot and page source for debugging
-        try:
-            driver.save_screenshot("error_screenshot.png")
-            print("Screenshot saved as error_screenshot.png")
-        except:
-            pass
-        try:
-            with open("test_data/debug_page_source.html", "w", encoding="utf-8") as f:
-                f.write(driver.page_source)
-            print("Page source saved as debug_page_source.html")
-        except:
-            pass
-        return None
+                'Action': trading_action,
+                'Weight': entry.get('new_weight', ''),
+                'Change': change_weight,
+                'Date': entry.get('date', '')
+            })
+    
+    return trading_data
 
-    return holdings_data
+
+def get_portfolio_data_automated(scrape_type='current_picks', headless=True):
+    """
+    Automated function to scrape portfolio data without manual intervention.
+    Use this function when calling from trading scripts.
+    
+    Args:
+        scrape_type: 'current_picks', 'latest_history', or 'all_history'
+        headless: Whether to run browser in headless mode
+    
+    Returns:
+        list: Scraped data or None if error
+    """
+    driver_tuple = None
+    try:
+        # Setup browser
+        driver_tuple = setup_driver(
+            BROWSER_USER_DATA_DIR,
+            BROWSER_PROFILE_NAME,
+            BROWSER_EXECUTABLE_PATH,
+            USE_EXISTING_SESSION,
+            headless=headless
+        )
+        
+        playwright, context, page = driver_tuple
+        
+        # Check if login is needed (but don't prompt)
+        needs_login = check_if_login_needed(page)
+        
+        if needs_login:
+            print("⚠️  WARNING: Login required. Please run scraper.py manually first to log in.")
+            return None
+        
+        # Scrape based on type
+        if scrape_type == 'current_picks':
+            page.goto(CURRENT_PICKS_URL, wait_until='networkidle', timeout=60000)
+            page.wait_for_timeout(2000)
+            data = scrape_current_picks(page, navigate=False)
+        elif scrape_type == 'latest_history':
+            data = scrape_portfolio_history(page, filter_last_friday=True)
+        elif scrape_type == 'all_history':
+            data = scrape_portfolio_history(page, filter_last_friday=False)
+        else:
+            print(f"Invalid scrape_type: {scrape_type}")
+            return None
+        
+        return data
+        
+    except Exception as e:
+        print(f"Error in automated scraping: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    finally:
+        if driver_tuple:
+            playwright, context, _ = driver_tuple
+            context.close()
+            playwright.stop()
 
 
 def test_html_parsing():
-    """Test function to validate HTML parsing with local files"""
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    import os
+    """
+    Test HTML parsing with a sample file.
+    """
+    print("=== Test Mode: HTML Parsing ===")
+    print("This function is for testing purposes.")
+    print("Place your HTML sample in a file and modify this function to test parsing.")
+
+
+def main():
+    """
+    Main function for testing the scraper independently.
+    """
+    import sys
     
-    # Set up a basic Chrome driver for testing
-    options = Options()
-    options.add_argument('--headless')  # Run in background
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    
+    driver_tuple = None
     try:
-        driver = webdriver.Chrome(options=options)
+        # Setup browser
+        print("Setting up Playwright browser...")
+        driver_tuple = setup_driver(
+            BROWSER_USER_DATA_DIR,
+            BROWSER_PROFILE_NAME,
+            BROWSER_EXECUTABLE_PATH,
+            USE_EXISTING_SESSION
+        )
         
-        # Test both HTML files
-        test_files = [
-            ('example.html', '/home/tvpower/CLionProjects/seekingQuant/seeking-alpha-scrape/example.html'),
-            ('debug_page_source.html', '/home/tvpower/CLionProjects/seekingQuant/seeking-alpha-scrape/debug_page_source.html')
-        ]
+        playwright, context, page = driver_tuple
         
-        for file_name, file_path in test_files:
-            if os.path.exists(file_path):
-                print(f"\n=== Testing {file_name} ===")
-                driver.get(f"file://{file_path}")
-                
-                # Use the same logic as scrape_portfolio_data but simplified
-                holdings_data = []
-                
-                # Try multiple table body selectors
-                table_body_selectors = [
-                    'tbody[data-test-id="table-body-infinite"]',
-                    'tbody[data-test-id="table-body"]'
-                ]
-                
-                table_body_selector = None
-                for selector in table_body_selectors:
-                    try:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                        if elements:
-                            table_body_selector = selector
-                            print(f"Found table with selector: {table_body_selector}")
-                            break
-                    except:
-                        continue
-                
-                if table_body_selector:
-                    rows = driver.find_elements(By.CSS_SELECTOR, f"{table_body_selector} tr")
-                    print(f"Found {len(rows)} rows")
-                    
-                    for i, row in enumerate(rows[:3]):  # Test first 3 rows only
-                        cells = row.find_elements(By.CSS_SELECTOR, "th, td")
-                        if len(cells) >= 2:
-                            # Extract symbol
-                            try:
-                                symbol_element = cells[1].find_element(By.CSS_SELECTOR, '[data-test-id="portfolio-ticker-link"]')
-                                symbol = symbol_element.text.strip()
-                                print(f"Row {i}: Symbol = {symbol}")
-                            except:
-                                print(f"Row {i}: Could not extract symbol")
-                else:
-                    print("No table found with expected selectors")
+        # Check if login is needed
+        print("\n=== Checking Login Status ===")
+        needs_login = check_if_login_needed(page)
+        
+        if needs_login:
+            print("\n" + "="*60)
+            print("LOGIN REQUIRED")
+            print("="*60)
+            print("\nThe browser has opened. Please:")
+            print("1. Click 'Sign In' or navigate to login")
+            print("2. Login using your Google account")
+            print("3. Make sure you're logged into Seeking Alpha Pro")
+            print("4. Verify you can see the portfolio data")
+            print("\nPress Enter AFTER you've successfully logged in...")
+            input()
+            
+            # Verify login was successful
+            print("\nVerifying login...")
+            page.goto(CURRENT_PICKS_URL, timeout=30000)
+            page.wait_for_timeout(2000)
+            
+            # Check both table selectors
+            has_table = (page.locator('tbody[data-test-id="table-body"]').count() > 0 or 
+                        page.locator('tbody[data-test-id="table-body-infinite"]').count() > 0)
+            
+            if not has_table:
+                print("\n⚠️  WARNING: Could not detect table. Make sure you're logged in.")
+                print("Continuing anyway (automated mode)...")
+        else:
+            print("✓ Already logged in! Session restored from previous run.\n")
+        
+        # Check if user wants to scrape current picks or history
+        print("\n=== Seeking Alpha Pro Quant Portfolio Scraper ===")
+        print("1. Scrape Current Picks")
+        print("2. Scrape Portfolio History (latest movements)")
+        print("3. Scrape Portfolio History (all)")
+        
+        if len(sys.argv) > 1:
+            choice = sys.argv[1]
+        else:
+            choice = input("\nEnter choice (1/2/3): ").strip()
+        
+        if choice == '1':
+            # Scrape current picks
+            print("\n=== SCRAPING CURRENT PICKS ===")
+            # Navigate to the page
+            page.goto(CURRENT_PICKS_URL, wait_until='networkidle', timeout=60000)
+            page.wait_for_timeout(2000)
+            picks_data = scrape_current_picks(page, navigate=False)
+            
+            if picks_data:
+                print("\n=== CURRENT PICKS DATA ===")
+                for i, item in enumerate(picks_data, 1):
+                    print(f"\n--- Pick {i} ---")
+                    print(f"Company: {item.get('company', 'N/A')}")
+                    print(f"Symbol: {item.get('symbol', 'N/A')}")
+                    print(f"Picked Price: {item.get('picked_price', 'N/A')}")
+                    print(f"Sector: {item.get('sector', 'N/A')}")
+                    print(f"Weight: {item.get('weight', 'N/A')}")
+                    print(f"Quant Rating: {item.get('quant_rating', 'N/A')}")
+                    print(f"Price Return: {item.get('price_return', 'N/A')}")
             else:
-                print(f"{file_name} not found at {file_path}")
+                print("\nNo picks scraped.")
         
-        driver.quit()
-        print("\n=== Test completed ===")
+        elif choice == '2':
+            # Scrape latest portfolio history
+            print("\n=== SCRAPING LATEST PORTFOLIO HISTORY ===")
+            history_data = scrape_portfolio_history(page, filter_last_friday=True)
+            
+            if history_data:
+                print("\n=== PORTFOLIO HISTORY DATA (LATEST) ===")
+                for i, item in enumerate(history_data, 1):
+                    print(f"\n--- Movement {i} ---")
+                    print(f"Symbol: {item.get('symbol', 'N/A')}")
+                    print(f"Date: {item.get('date', 'N/A')}")
+                    print(f"Action: {item.get('action', 'N/A')}")
+                    print(f"Starting Weight: {item.get('starting_weight', 'N/A')}")
+                    print(f"New Weight: {item.get('new_weight', 'N/A')}")
+                    print(f"Change: {item.get('change_weight', 'N/A')}")
+                    print(f"Price/Share: {item.get('price_share', 'N/A')}")
+            else:
+                print("\nNo history scraped.")
+        
+        elif choice == '3':
+            # Scrape all portfolio history
+            print("\n=== SCRAPING ALL PORTFOLIO HISTORY ===")
+            history_data = scrape_portfolio_history(page, filter_last_friday=False)
+            
+            if history_data:
+                print("\n=== PORTFOLIO HISTORY DATA (ALL) ===")
+                print(f"Total movements: {len(history_data)}")
+                for i, item in enumerate(history_data[:10], 1):  # Show first 10
+                    print(f"\n--- Movement {i} ---")
+                    print(f"Symbol: {item.get('symbol', 'N/A')}")
+                    print(f"Date: {item.get('date', 'N/A')}")
+                    print(f"Action: {item.get('action', 'N/A')}")
+                    print(f"Change: {item.get('change_weight', 'N/A')}")
+                if len(history_data) > 10:
+                    print(f"\n... and {len(history_data) - 10} more movements")
+            else:
+                print("\nNo history scraped.")
+        
+        else:
+            print("Invalid choice. Exiting.")
+        
+        # Auto-close browser (for automation)
+        print("\nClosing browser...")
         
     except Exception as e:
-        print(f"Test failed: {e}")
-        print("Note: This test requires chromedriver. Run the main scraper for full functionality.")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if driver_tuple:
+            playwright, context, _ = driver_tuple
+            context.close()
+            playwright.stop()
 
 
 if __name__ == "__main__":
-    import sys
-    
-    # Check if test mode is requested
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        test_html_parsing()
-        sys.exit(0)
-    
-    # Check for --all flag to disable date filtering
-    filter_to_recent = "--all" not in sys.argv
-    
-    if USE_EXISTING_SESSION:
-        print("=" * 60)
-        print("USING EXISTING BROWSER SESSION")
-        print("Please start Brave with remote debugging enabled:")
-        print("brave --remote-debugging-port=9222")
-        print("=" * 60)
-        prompt_if_tty("Press Enter once Brave is running with the above command...")
-    else:
-        prompt_if_tty("Please ensure all browser windows are closed, then press enter to continue...")
-    
-    try:
-        driver = setup_driver(
-            BROWSER_USER_DATA_DIR, 
-            BROWSER_PROFILE_NAME, 
-            BROWSER_EXECUTABLE_PATH,
-            USE_EXISTING_SESSION,
-            REMOTE_DEBUGGING_PORT
-        )
-        try:
-            portfolio = scrape_portfolio_data(driver, filter_to_recent=filter_to_recent)
-            if portfolio:
-                df = pd.DataFrame(portfolio)
-                print("\n--- scraped portfolio data ---")
-                print(df.to_string())
-                print("\n" + "=" * 30)
-            else:
-                print("\nCouldn't retrieve portfolio data. Check that you are logged in to Seeking Alpha")
+    main()
 
-        finally:
-            if not USE_EXISTING_SESSION:
-                print("\nClosing the browser.")
-                driver.quit()
-            else:
-                print("\nScript completed. Browser session remains open.")
-    except Exception as e:
-        print(f"Failed to initialize driver: {e}")
-        print("\nTroubleshooting:")
-        if USE_EXISTING_SESSION:
-            print("1. Make sure Brave is running with: brave --remote-debugging-port=9222")
-            print("2. Or set USE_EXISTING_SESSION = False to start a new browser instance")
-        else:
-            print("1. Check browser paths are correct")
-            print("2. Try setting USE_EXISTING_SESSION = True")

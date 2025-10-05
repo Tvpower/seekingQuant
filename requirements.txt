@@ -1,5 +1,3 @@
 ibapi
-undetected-chromedriver
-selenium>=4.11.2
+playwright>=1.40.0
 pandas>=1.3.0
-webdriver-manager>=3.8.0
