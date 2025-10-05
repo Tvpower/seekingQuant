@@ -41,7 +41,7 @@ playwright install chromium
 3) Configure IBKR connection in `main.py`
 ```python
 TRADE_AMOUNT = 500          # Dollar amount per trade
-IBKR_PORT = 7497           # 7497 for paper, 7496 for live
+IBKR_PORT = 7497           
 IBKR_CLIENT_ID = 0         # Your client ID
 ```
 
