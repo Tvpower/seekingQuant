@@ -2,6 +2,11 @@ import sys
 import threading
 import time
 import pandas as pd
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # sys.path adjusted: use packages
 # sys.path adjusted: use packages
@@ -12,16 +17,14 @@ from trade_dirs.trader import IBKR_API, run_loop
 
 
 # --- Configuration ---
-TRADE_AMOUNT = 500
-IBKR_PORT = 7497 # 7497 for paper
-IBKR_CLIENT_ID = 0000 #IBKR id here
+# Load from .env when needed - no hardcoded defaults
 
 def run_trading_session(portfolio_df):
     """Connects to IBKR and executes trades based on the portfolio DataFrame."""
     print("\n--- Starting Trading Session ---")
     try:
         app = IBKR_API()
-        app.connect("127.0.0.1", IBKR_PORT, IBKR_CLIENT_ID)
+        app.connect("127.0.0.1", int(os.getenv('IBKR_PORT')), int(os.getenv('IBKR_CLIENT_ID')))
 
         api_thread = threading.Thread(target=run_loop, args=(app,), daemon=True)
         api_thread.start()
@@ -33,7 +36,7 @@ def run_trading_session(portfolio_df):
             action = row['Action']
 
             if action.upper() in ["BUY", "SELL"]:
-                app.place_dollar_order(symbol, action.upper(), TRADE_AMOUNT)
+                app.place_dollar_order(symbol, action.upper(), int(os.getenv('TRADE_AMOUNT')))
                 time.sleep(1) # Small delay between placing orders
 
         print("\nWaiting for orders to process...")
@@ -61,9 +64,9 @@ def main():
         scrape_type = 'current_picks'
 
     try:
-        # Step 1: Scrape portfolio data (fully automated, headless)
+        # Step 1: Scrape portfolio data (with visible browser to avoid bot detection)
         print(f"--- Scraping Portfolio Data ({scrape_type}) ---")
-        portfolio_data = get_portfolio_data_automated(scrape_type=scrape_type, headless=True)
+        portfolio_data = get_portfolio_data_automated(scrape_type=scrape_type, headless=False)
 
         # Step 2: If scraping is successful, run the trading logic
         if portfolio_data:

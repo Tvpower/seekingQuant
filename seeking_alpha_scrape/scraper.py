@@ -81,8 +81,6 @@ def setup_driver(user_data_dir, profile_name, executable_path, use_existing_sess
         args=[
             '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
         ],
         ignore_default_args=['--enable-automation'],
         viewport={'width': 1920, 'height': 1080},
