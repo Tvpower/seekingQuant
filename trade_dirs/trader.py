@@ -17,6 +17,8 @@ class IBKR_API(EWrapper, EClient):
         self.positions_received = False
         self.accounts = []  # Store available accounts
         self.accounts_received = False
+        self.position_prices = {}  # Store current prices for positions
+        self.pending_price_requests = 0  # Track pending price requests
 
     def error(self, reqId, errorCode, errorString):
         # Filter out informational messages (2104, 2106, 2158 are connection status messages)
@@ -30,24 +32,43 @@ class IBKR_API(EWrapper, EClient):
         print(f"Next valid order ID: {orderId}")
 
         # Enable real-time market data (Type 1)
-        # For overnight session, this will get live overnight prices
         self.reqMarketDataType(1)  # Real-time
-        print("Enabled real-time market data for overnight trading")
+        print("Enabled real-time market data")
 
     def tickPrice(self, reqId, tickType, price, attrib):
         """Callback for receiving price data"""
-        if tickType == 4:  # Last price (real-time)
-            self.current_price = price
-            self.price_received = True
-            print(f"Received real-time price: ${price:.2f}")
-        elif tickType == 9:  # Close price (fallback)
-            self.close_price = price
-            print(f"Received close price: ${price:.2f}")
-        elif tickType == 68:  # Delayed last price
-            if self.current_price is None:  # Only use if no real-time available
+        # Check if this is a position price request
+        if reqId >= 10000:  # Position price requests use IDs >= 10000
+            symbol_idx = reqId - 10000
+            symbols = list(self.positions.keys())
+            if symbol_idx < len(symbols):
+                symbol = symbols[symbol_idx]
+                if tickType == 4:  # Last price
+                    self.position_prices[symbol] = price
+                    self.pending_price_requests -= 1
+                    print(f"{symbol}: Current price ${price:.2f}")
+                    self.cancelMktData(reqId)
+                elif tickType == 9 and symbol not in self.position_prices:  # Close price fallback
+                    self.position_prices[symbol] = price
+                    self.pending_price_requests -= 1
+                    print(f"{symbol}: Using close price ${price:.2f}")
+                    self.cancelMktData(reqId)
+        else:
+            # Regular price request for orders
+            if tickType == 4:  # Last price (real-time)
                 self.current_price = price
                 self.price_received = True
-                print(f"Received delayed price: ${price:.2f}")
+                print(f"Received real-time price: ${price:.2f}")
+            elif tickType == 9:  # Close price (fallback)
+                self.close_price = price
+                # Only print if we don't have real-time price yet
+                if not self.price_received:
+                    print(f"Received close price: ${price:.2f}")
+            elif tickType == 68:  # Delayed last price
+                if self.current_price is None:  # Only use if no real-time available
+                    self.current_price = price
+                    self.price_received = True
+                    print(f"Received delayed price: ${price:.2f}")
 
     def position(self, account, contract, position, avgCost):
         """Callback for receiving position data"""
@@ -57,19 +78,36 @@ class IBKR_API(EWrapper, EClient):
             
         if contract.secType == "STK":  # Only track stocks
             symbol = contract.symbol
-            market_value = position * avgCost
+            # Store position data temporarily - will update with market value later
             self.positions[symbol] = {
                 'account': account,
                 'position': position,
                 'avg_cost': avgCost,
-                'market_value': market_value
+                'market_value': 0,  # Will be updated with current price
+                'contract': contract  # Store contract for price request
             }
-            print(f"Position: {symbol} - Quantity: {position}, Avg Cost: ${avgCost:.2f}, Market Value: ${market_value:.2f}")
+            print(f"Position: {symbol} - Quantity: {position}, Avg Cost: ${avgCost:.2f}")
 
     def positionEnd(self):
         """Called when all positions have been received"""
-        self.positions_received = True
+        # Now fetch current prices for all positions
         print(f"All positions received. Total stocks: {len(self.positions)}")
+        print("Fetching current market prices...")
+        self.fetch_position_prices()
+    
+    def fetch_position_prices(self):
+        """Fetch current market prices for all positions"""
+        symbols = list(self.positions.keys())
+        for idx, symbol in enumerate(symbols):
+            data = self.positions[symbol]
+            if 'contract' in data:
+                req_id = 10000 + idx  # Use IDs >= 10000 for position prices
+                self.pending_price_requests += 1
+                self.reqMktData(req_id, data['contract'], "", False, False, [])
+                time.sleep(0.1)  # Small delay between requests
+        
+        # Mark that we've received all positions
+        self.positions_received = True
 
     def managedAccounts(self, accountsList):
         """Callback for receiving managed accounts list"""
@@ -96,17 +134,32 @@ class IBKR_API(EWrapper, EClient):
         """Request all positions for the account"""
         self.positions = {}
         self.positions_received = False
+        self.position_prices = {}
+        self.pending_price_requests = 0
         self.filter_account = account_id  # Set account filter
         print(f"Requesting account positions for: {account_id if account_id else 'Primary Account'}...")
         self.reqPositions()
         
-        # Wait for positions data
+        # Wait for positions data and price updates
         timeout = 0
-        while not self.positions_received and timeout < 100:  # 10 second timeout
+        while (not self.positions_received or self.pending_price_requests > 0) and timeout < 200:  # 20 second timeout
             time.sleep(0.1)
             timeout += 1
         
         self.cancelPositions()
+        
+        # Update market values with fetched prices
+        for symbol, data in self.positions.items():
+            if symbol in self.position_prices:
+                current_price = self.position_prices[symbol]
+                data['market_value'] = data['position'] * current_price
+                data['current_price'] = current_price
+                print(f"{symbol}: {data['position']} shares @ ${current_price:.2f} = ${data['market_value']:.2f}")
+            else:
+                # Fallback to cost basis if price not available
+                data['market_value'] = data['position'] * data['avg_cost']
+                print(f"{symbol}: Using cost basis for market value")
+        
         return self.positions
 
     def place_dollar_order(self, symbol, action, amount, use_market=False, whole_shares_only=False, account=""):
@@ -137,7 +190,7 @@ class IBKR_API(EWrapper, EClient):
         self.price_received = False
         req_id = self.nextOrderId
 
-        print(f"Requesting overnight price for {symbol}...")
+        print(f"Requesting market price for {symbol}...")
         self.reqMktData(req_id, contract, "", False, False, [])
 
         # Wait for price data (longer timeout for overnight session)
@@ -209,7 +262,7 @@ class IBKR_API(EWrapper, EClient):
                 print(f"Placed {action} LIMIT order for {int(quantity)} shares at ${order.lmtPrice:.2f} (total ~${quantity * order.lmtPrice:.2f}) of {symbol}")
             else:
                 print(f"Placed {action} LIMIT order for {quantity:.6f} shares at ${order.lmtPrice:.2f} (total ~${quantity * order.lmtPrice:.2f}) of {symbol}")
-            print(f"Order is eligible for overnight session execution (8PM-3:50AM ET)")
+            print(f"Order placed with limit price; outsideRth permitted")
 
         self.nextOrderId += 1
 

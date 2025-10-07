@@ -1,0 +1,53 @@
+======================================================================
+           PORTFOLIO REBALANCING REPORT
+======================================================================
+Timestamp: 2025-10-05 20:56:49
+Target Value per Stock: $500
+======================================================================
+
+SUMMARY
+----------------------------------------------------------------------
+Total Stocks Processed: 30
+  - BUY Orders:   11  (Total: $    280.51)
+  - SELL Orders:   7  (Total: $     64.86)
+  - HOLD:         12
+Net Movement: $+215.65
+----------------------------------------------------------------------
+
+DETAILED MOVEMENTS
+----------------------------------------------------------------------
+Symbol   Action       Current      Target       Amount       Reason
+----------------------------------------------------------------------
+ALIZY    BUY          $489.94      $500.00      $10.06       Below target value
+BTG      BUY          $455.30      $500.00      $44.70       Below target value
+CTM      BUY          $464.79      $500.00      $35.21       Below target value
+CYD      BUY          $482.41      $500.00      $17.59       Below target value
+DB       BUY          $473.41      $500.00      $26.59       Below target value
+NEM      BUY          $481.35      $500.00      $18.65       Below target value
+NGD      BUY          $483.31      $500.00      $16.69       Below target value
+SCZMF    BUY          $455.93      $500.00      $44.07       Below target value
+SSRM     BUY          $472.55      $500.00      $27.45       Below target value
+TSM      BUY          $489.02      $500.00      $10.98       Below target value
+TTMI     BUY          $471.50      $500.00      $28.50       Below target value
+AFLYY    SELL         $508.69      $500.00      $8.69        Above target value
+BNPQY    SELL         $513.12      $500.00      $13.12       Above target value
+BTM      SELL         $501.00      $500.00      $1.00        Above target value
+GECC     SELL         $501.00      $500.00      $1.00        Above target value
+GFI      SELL         $501.00      $500.00      $1.00        Above target value
+KPLT     SELL         $539.05      $500.00      $39.05       Above target value
+TIGR     SELL         $501.00      $500.00      $1.00        Above target value
+COMM     HOLD         $501.00      $500.00      -            Already at target value
+DOMO     HOLD         $501.00      $500.00      -            Already at target value
+HRTG     HOLD         $501.00      $500.00      -            Already at target value
+KGC      HOLD         $501.00      $500.00      -            Already at target value
+MU       HOLD         $500.99      $500.00      -            Already at target value
+PGY      HOLD         $501.00      $500.00      -            Already at target value
+SEZL     HOLD         $500.99      $500.00      -            Already at target value
+SIEGY    HOLD         $500.99      $500.00      -            Already at target value
+TPC      HOLD         $500.99      $500.00      -            Already at target value
+VSAT     HOLD         $501.00      $500.00      -            Already at target value
+W        HOLD         $500.99      $500.00      -            Already at target value
+XIACY    HOLD         $501.00      $500.00      -            Already at target value
+----------------------------------------------------------------------
+
+End of Report

@@ -17,7 +17,6 @@ from trade_dirs.trader import IBKR_API, run_loop
 
 
 # --- Configuration ---
-# Load from .env when needed - no hardcoded defaults
 
 def run_trading_session(portfolio_df):
     """Connects to IBKR and executes trades based on the portfolio DataFrame."""
