@@ -88,6 +88,33 @@ python main.py --current
 python main.py --all
 ```
 
+#### Execute Seeking Alpha Trades (New Utility)
+
+Automatically scrape latest Seeking Alpha movements and execute trades:
+
+```bash
+# Default: Execute trades with primary account
+python utils/execute_seeking_alpha_trades.py
+
+# Specify account
+python utils/execute_seeking_alpha_trades.py --account U1234567
+
+# Use limit orders instead of market orders
+python utils/execute_seeking_alpha_trades.py --limit
+
+# Run in headless mode (no browser UI)
+python utils/execute_seeking_alpha_trades.py --headless
+
+# Combined options
+python utils/execute_seeking_alpha_trades.py --account U1234567 --limit --headless
+```
+
+**How it works:**
+1. Scrapes latest portfolio movements from Seeking Alpha (up to last Friday)
+2. Executes **BUY** orders first ($500 each)
+3. Then executes **SELL** orders (closes positions completely at market value)
+4. Generates a detailed report in `reports/` directory
+
 #### Programmatic Integration
 
 ```python
@@ -202,15 +229,48 @@ Symbol, Action (BUY/SELL), Weight, Change, Date
 
 ```
 SeekingQuant/
-├── main.py                          # Main trading orchestration
-├── requirements.txt                 # Python dependencies
-├── README.md                        # This file
+├── main.py                                    # Main trading orchestration
+├── requirements.txt                           # Python dependencies
+├── README.md                                  # This file
 ├── seeking_alpha_scrape/
-│   ├── scraper.py                   # Playwright scraper with automation
-│   └── html-sample/                 # Sample HTML for testing
-└── trade_dirs/
-    └── trader.py                    # IBKR API integration
+│   ├── scraper.py                             # Playwright scraper with automation
+│   └── html-sample/                           # Sample HTML for testing
+├── trade_dirs/
+│   └── trader.py                              # IBKR API integration
+├── utils/
+│   ├── trading_common.py                      # Common utilities (symbols, connections, reports)
+│   ├── execute_seeking_alpha_trades.py        # Auto-execute Seeking Alpha trades
+│   ├── rebalance_from_file.py                 # Rebalance portfolio from file
+│   ├── rebalance_500.py                       # Rebalance portfolio to equal weights
+│   └── buy_portfolio.py                       # Buy entire portfolio
+└── reports/                                   # Trading reports directory
 ```
+
+### Common Utilities Module
+
+The `utils/trading_common.py` module provides shared functions to eliminate code duplication:
+
+**Symbol Normalization:**
+- `normalize_symbol()` - Standardize symbol format
+- `ibkr_symbol()` - Convert to IBKR format
+
+**IBKR Connection:**
+- `connect_to_ibkr()` - Connect to Interactive Brokers
+- `disconnect_from_ibkr()` - Safely disconnect
+
+**Account Management:**
+- `get_available_accounts()` - Fetch available accounts
+- `select_account()` - Interactive account selection
+
+**Report Generation:**
+- `generate_trade_report()` - Universal report generator
+
+**Utilities:**
+- `parse_trading_args()` - Parse command line arguments
+- `print_header()`, `print_section()` - Formatted output
+- `confirm_action()` - User confirmation prompts
+
+See `utils/README_REFACTORING.md` for detailed refactoring information.
 
 ### Automation with Cron
 

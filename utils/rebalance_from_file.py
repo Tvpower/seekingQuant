@@ -1,40 +1,16 @@
-import threading
-import time
 import sys
 import os
 from datetime import datetime
-from dotenv import load_dotenv
 import re
 
-# Load environment variables
-load_dotenv()
+# Add parent directory to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from trade_dirs.trader import IBKR_API, run_loop
-
-# --- Configuration ---
-
-
-def normalize_symbol(symbol):
-    """
-    Normalize stock symbols to handle variations.
-    E.g., 'BRK B' -> 'BRK.B', 'BRK.B' -> 'BRK.B'
-    """
-    # Replace space with dot for Class B/A stocks
-    symbol = symbol.replace(' ', '.')
-    return symbol
-
-
-def ibkr_symbol(symbol):
-    """
-    Convert normalized symbol to IBKR format for orders.
-    E.g., 'BRK.B' -> 'BRK B' (IBKR uses spaces for share classes)
-    """
-    # Convert dot back to space for IBKR API
-    if '.' in symbol and len(symbol.split('.')) == 2:
-        parts = symbol.split('.')
-        if len(parts[1]) == 1 and parts[1].isalpha():  # Class A, B, etc.
-            return f"{parts[0]} {parts[1]}"
-    return symbol
+from utils.trading_common import (
+    normalize_symbol, ibkr_symbol, connect_to_ibkr, disconnect_from_ibkr,
+    select_account, generate_trade_report, parse_trading_args,
+    print_header, print_section, confirm_action
+)
 
 
 def parse_target_file(filepath):
@@ -94,82 +70,6 @@ def parse_target_file(filepath):
     return targets
 
 
-def get_available_accounts():
-    """Get list of available accounts from IBKR."""
-    print("\nConnecting to IBKR to fetch available accounts...")
-    
-    try:
-        app = IBKR_API()
-        app.connect("127.0.0.1", int(os.getenv('IBKR_PORT')), int(os.getenv('IBKR_CLIENT_ID')))
-        
-        api_thread = threading.Thread(target=run_loop, args=(app,), daemon=True)
-        api_thread.start()
-        
-        time.sleep(2)  # Wait for connection
-        
-        accounts = app.get_available_accounts()
-        app.disconnect()
-        
-        return accounts
-        
-    except Exception as e:
-        print(f"Error fetching accounts: {e}")
-        return []
-
-
-def select_account():
-    """Interactive account selection with real account fetching."""
-    print("\n--- Account Selection ---")
-    print("1. Fetch accounts from IBKR")
-    print("2. Enter custom account ID")
-    print("3. Use Primary Account (default)")
-    
-    while True:
-        choice = input("\nSelect option (1-3): ").strip()
-        
-        if choice == "1":
-            accounts = get_available_accounts()
-            
-            if not accounts:
-                print("No accounts found or error occurred.")
-                print("Falling back to manual entry...")
-                account_id = input("Enter account ID: ").strip()
-                return account_id if account_id else ""
-            
-            print(f"\nFound {len(accounts)} account(s):")
-            for i, account in enumerate(accounts, 1):
-                account_display = account if account else "Primary Account"
-                print(f"  {i}. {account_display}")
-            
-            while True:
-                try:
-                    selection = input(f"\nSelect account (1-{len(accounts)}): ").strip()
-                    if selection.lower() in ['q', 'quit', 'exit']:
-                        return ""
-                    
-                    index = int(selection) - 1
-                    if 0 <= index < len(accounts):
-                        return accounts[index]
-                    else:
-                        print(f"Please enter a number between 1 and {len(accounts)}")
-                except ValueError:
-                    print("Please enter a valid number or 'q' to quit")
-                except KeyboardInterrupt:
-                    print("\nOperation cancelled.")
-                    return ""
-                    
-        elif choice == "2":
-            account_id = input("Enter account ID: ").strip()
-            if account_id:
-                return account_id
-            else:
-                print("Invalid account ID. Please try again.")
-        elif choice == "3":
-            return ""
-        else:
-            print("Invalid choice. Please select 1, 2, or 3.")
-
-
 def rebalance_to_targets(targets, account_id="", use_market=True):
     """
     Rebalances portfolio to match target values from file.
@@ -187,26 +87,17 @@ def rebalance_to_targets(targets, account_id="", use_market=True):
         account_id: IBKR account ID (optional, defaults to primary account)
         use_market: Use market orders (True) or limit orders (False)
     """
-    print("\n" + "="*60)
-    print("     PORTFOLIO REBALANCING TO TARGET VALUES")
-    print("="*60)
+    print_header("PORTFOLIO REBALANCING TO TARGET VALUES")
     print(f"Total Target Stocks: {len(targets)}")
     print(f"Total Target Value: ${sum(targets.values()):.2f}")
     print(f"Account: {account_id if account_id else 'Primary Account'}")
-    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*60 + "\n")
+    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     
     movements = []
     
     try:
         # Connect to IBKR
-        app = IBKR_API()
-        app.connect("127.0.0.1", int(os.getenv('IBKR_PORT')), int(os.getenv('IBKR_CLIENT_ID')))
-        
-        api_thread = threading.Thread(target=run_loop, args=(app,), daemon=True)
-        api_thread.start()
-        
-        time.sleep(3)  # Wait for connection
+        app, _ = connect_to_ibkr()
         
         # Get all current positions
         positions = app.get_account_positions(account_id)
@@ -283,7 +174,7 @@ def rebalance_to_targets(targets, account_id="", use_market=True):
         
         # Execute NEW stock orders first
         if new_stocks:
-            print(f"\n--- Buying NEW Stocks ({len(new_stocks)} stocks) ---")
+            print_section(f"Buying NEW Stocks ({len(new_stocks)} stocks)")
             for item in new_stocks:
                 symbol = item['symbol']
                 amount = item['amount']
@@ -317,7 +208,7 @@ def rebalance_to_targets(targets, account_id="", use_market=True):
         
         # Execute BUY orders for existing stocks
         if buys:
-            print(f"\n--- Executing BUY Orders ({len(buys)} stocks) ---")
+            print_section(f"Executing BUY Orders ({len(buys)} stocks)")
             for item in buys:
                 symbol = item['symbol']
                 amount = item['amount']
@@ -351,7 +242,7 @@ def rebalance_to_targets(targets, account_id="", use_market=True):
         
         # Execute SELL orders
         if sells:
-            print(f"\n--- Executing SELL Orders ({len(sells)} stocks) ---")
+            print_section(f"Executing SELL Orders ({len(sells)} stocks)")
             for item in sells:
                 symbol = item['symbol']
                 amount = item['amount']
@@ -384,97 +275,42 @@ def rebalance_to_targets(targets, account_id="", use_market=True):
                         'reason': f'Error: {str(e)}'
                     })
         
-        print("\nWaiting for orders to process...")
-        time.sleep(5)
-        app.disconnect()
+        disconnect_from_ibkr(app)
         
         # Generate report
-        report_file = generate_report(movements, targets)
+        report_file = generate_trade_report(
+            movements,
+            report_type="rebalance_from_file",
+            title="PORTFOLIO REBALANCING TO TARGET VALUES REPORT",
+            additional_info={
+                'Total Target Stocks': len(targets),
+                'Total Target Value': f"${sum(targets.values()):.2f}",
+                'Account': account_id if account_id else 'Primary Account'
+            }
+        )
         
-        print("\n" + "="*60)
-        print(f"Rebalancing Complete! Report saved to: {report_file}")
-        print("="*60 + "\n")
+        print_header(f"Rebalancing Complete! Report saved to: {report_file}")
         
     except Exception as e:
         print(f"An error occurred during rebalancing: {e}")
         if movements:
             # Still generate report even if there was an error
-            report_file = generate_report(movements, targets, error=str(e))
+            report_file = generate_trade_report(
+                movements,
+                report_type="rebalance_from_file",
+                title="PORTFOLIO REBALANCING TO TARGET VALUES REPORT (PARTIAL)",
+                additional_info={
+                    'Total Target Stocks': len(targets),
+                    'Total Target Value': f"${sum(targets.values()):.2f}"
+                },
+                error=str(e)
+            )
             print(f"Partial report saved to: {report_file}")
-
-
-def generate_report(movements, targets, error=None):
-    """Generate a text report of all portfolio movements."""
-    # Ensure reports directory exists
-    reports_dir = "../reports"
-    os.makedirs(reports_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"rebalance_from_file_{timestamp}.txt"
-    filepath = os.path.join(reports_dir, filename)
-    
-    with open(filepath, 'w') as f:
-        f.write("="*70 + "\n")
-        f.write("      PORTFOLIO REBALANCING TO TARGET VALUES REPORT\n")
-        f.write("="*70 + "\n")
-        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Total Target Stocks: {len(targets)}\n")
-        f.write(f"Total Target Value: ${sum(targets.values()):.2f}\n")
-        f.write("="*70 + "\n\n")
-        
-        if error:
-            f.write(f"ERROR OCCURRED: {error}\n\n")
-        
-        # Summary statistics
-        total_new = sum(1 for m in movements if m['action'] == 'BUY_NEW')
-        total_buys = sum(1 for m in movements if m['action'] == 'BUY')
-        total_sells = sum(1 for m in movements if m['action'] in ['SELL', 'SELL_ALL'])
-        total_holds = sum(1 for m in movements if m['action'] == 'HOLD')
-        total_buy_amount = sum(m['amount'] for m in movements if 'BUY' in m['action'])
-        total_sell_amount = sum(m['amount'] for m in movements if 'SELL' in m['action'])
-        
-        f.write("SUMMARY\n")
-        f.write("-"*70 + "\n")
-        f.write(f"Total Stocks Processed: {len(movements)}\n")
-        f.write(f"  - NEW Positions: {total_new:3d}  (Total: ${sum(m['amount'] for m in movements if m['action'] == 'BUY_NEW'):10.2f})\n")
-        f.write(f"  - BUY Orders:    {total_buys:3d}  (Total: ${sum(m['amount'] for m in movements if m['action'] == 'BUY'):10.2f})\n")
-        f.write(f"  - SELL Orders:   {total_sells:3d}  (Total: ${total_sell_amount:10.2f})\n")
-        f.write(f"  - HOLD:          {total_holds:3d}\n")
-        f.write(f"Net Movement: ${total_buy_amount - total_sell_amount:+.2f}\n")
-        f.write("-"*70 + "\n\n")
-        
-        # Detailed movements
-        f.write("DETAILED MOVEMENTS\n")
-        f.write("-"*70 + "\n")
-        f.write(f"{'Symbol':<8} {'Action':<12} {'Current':<12} {'Target':<12} {'Amount':<12} {'Reason'}\n")
-        f.write("-"*70 + "\n")
-        
-        # Sort: NEW first, then BUYs, then SELLs, then HOLDs
-        action_order = {'BUY_NEW': 1, 'BUY': 2, 'SELL': 3, 'SELL_ALL': 4, 'HOLD': 5, 
-                       'BUY_FAILED': 6, 'SELL_FAILED': 7}
-        sorted_movements = sorted(movements, key=lambda x: (action_order.get(x['action'], 99), x['symbol']))
-        
-        for m in sorted_movements:
-            symbol = m['symbol']
-            action = m['action']
-            current = f"${m['current_value']:.2f}"
-            target = f"${m['target_value']:.2f}"
-            amount = f"${m['amount']:.2f}" if m['amount'] != 0 else "-"
-            reason = m['reason']
-            
-            f.write(f"{symbol:<8} {action:<12} {current:<12} {target:<12} {amount:<12} {reason}\n")
-        
-        f.write("-"*70 + "\n")
-        f.write("\nEnd of Report\n")
-    
-    return filepath
 
 
 def main():
     """Main function to run portfolio rebalancing from file."""
-    print("\n" + "="*60)
-    print("    PORTFOLIO REBALANCING FROM FILE")
-    print("="*60)
+    print_header("PORTFOLIO REBALANCING FROM FILE")
     print("This will adjust all positions to match target values")
     print("from a text file.")
     
@@ -491,26 +327,15 @@ def main():
         return
     
     target_file = sys.argv[1]
-    account_id = ""
-    use_market = True
     
     # Parse command line arguments
-    if "--account" in sys.argv:
-        try:
-            account_index = sys.argv.index("--account") + 1
-            if account_index < len(sys.argv):
-                account_id = sys.argv[account_index]
-        except (ValueError, IndexError):
-            print("Error: --account requires an account ID")
-            return
-    
-    if "--limit" in sys.argv:
-        use_market = False
-        print("Using limit orders")
+    args = parse_trading_args(sys.argv)
+    if args is None:
+        return
     
     # If no account specified, prompt for selection
-    if not account_id:
-        account_id = select_account()
+    if not args['account_id']:
+        args['account_id'] = select_account()
     
     # Parse target file
     print(f"\n--- Parsing Target File: {target_file} ---")
@@ -529,13 +354,11 @@ def main():
     
     print(f"\nParsed {len(targets)} target stocks")
     print(f"Total target value: ${sum(targets.values()):.2f}")
-    print(f"Selected Account: {account_id if account_id else 'Primary Account'}")
-    print(f"Order Type: {'MARKET' if use_market else 'LIMIT'}")
+    print(f"Selected Account: {args['account_id'] if args['account_id'] else 'Primary Account'}")
+    print(f"Order Type: {'MARKET' if args['use_market'] else 'LIMIT'}")
     
-    confirm = input(f"\nReady to rebalance portfolio? (yes/no): ").strip().lower()
-    
-    if confirm == 'yes':
-        rebalance_to_targets(targets, account_id, use_market)
+    if args['auto_confirm'] or confirm_action("Ready to rebalance portfolio?"):
+        rebalance_to_targets(targets, args['account_id'], args['use_market'])
     else:
         print("Operation cancelled.")
 
