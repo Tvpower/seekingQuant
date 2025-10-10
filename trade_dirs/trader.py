@@ -162,7 +162,53 @@ class IBKR_API(EWrapper, EClient):
         
         return self.positions
 
-    def place_dollar_order(self, symbol, action, amount, use_market=False, whole_shares_only=False, account=""):
+    def get_current_price(self, symbol):
+        """
+        Fetch current market price for a symbol.
+        
+        Args:
+            symbol: Stock symbol (e.g., 'AAPL')
+            
+        Returns:
+            float: Current price or None if unavailable
+        """
+        if self.nextOrderId is None:
+            print("Waiting for next valid order ID...")
+            return None
+
+        # Create a contract object for a US stock
+        contract = Contract()
+        contract.symbol = symbol
+        contract.secType = "STK"
+        contract.exchange = "SMART"
+        contract.currency = "USD"
+
+        # Request current market price
+        self.current_price = None
+        self.close_price = None
+        self.price_received = False
+        req_id = self.nextOrderId
+
+        self.reqMktData(req_id, contract, "", False, False, [])
+
+        # Wait for price data
+        timeout = 0
+        while not self.price_received and timeout < 100:  # 10 second timeout
+            time.sleep(0.1)
+            timeout += 1
+
+        self.cancelMktData(req_id)
+
+        # Use close price as fallback if no live price available
+        if not self.price_received or self.current_price is None:
+            if self.close_price is not None:
+                return self.close_price
+            else:
+                return None
+        
+        return self.current_price
+
+    def place_dollar_order(self, symbol, action, amount, use_market=False, whole_shares_only=False, account="", current_value=None, target_value=None):
         """Places an order for a specific dollar amount.
 
         Args:
@@ -172,6 +218,8 @@ class IBKR_API(EWrapper, EClient):
             use_market: If True, uses MKT order (RTH only). If False, uses LMT order with outsideRth
             whole_shares_only: If True, rounds down to whole shares (no fractional)
             account: Account ID to place order for (required for multiple accounts)
+            current_value: Current market value of position (optional, for smart rounding)
+            target_value: Target market value (optional, for smart rounding)
         """
         if self.nextOrderId is None:
             print("Waiting for next valid order ID...")
@@ -214,8 +262,29 @@ class IBKR_API(EWrapper, EClient):
         if whole_shares_only:
             quantity = int(amount / self.current_price)  # Round down to whole shares
             if quantity < 1:
-                print(f"Calculated quantity is less than 1 share for {symbol} (price: ${self.current_price:.2f}), skipping order")
-                return
+                # Smart rounding: If buying/selling 1 share keeps us within acceptable range, do it
+                if current_value is not None and target_value is not None:
+                    if action == "BUY":
+                        new_value = current_value + self.current_price
+                        # Buy 1 share if it doesn't push us more than 20% over target
+                        if new_value <= target_value * 1.20:
+                            quantity = 1
+                            print(f"Buying 1 share to get closer to target (${current_value:.2f} -> ${new_value:.2f})")
+                        else:
+                            print(f"Skipping: buying 1 share would overshoot target by {((new_value - target_value) / target_value * 100):.1f}%")
+                            return
+                    else:  # SELL
+                        new_value = current_value - self.current_price
+                        # Sell 1 share if it doesn't push us more than 20% below target
+                        if new_value >= target_value * 0.80:
+                            quantity = 1
+                            print(f"Selling 1 share to get closer to target (${current_value:.2f} -> ${new_value:.2f})")
+                        else:
+                            print(f"Skipping: selling 1 share would undershoot target by {((target_value - new_value) / target_value * 100):.1f}%")
+                            return
+                else:
+                    print(f"Calculated quantity is less than 1 share for {symbol} (price: ${self.current_price:.2f}), skipping order")
+                    return
         else:
             quantity = round(amount / self.current_price, 8)  # Up to 8 decimal places
             if quantity < 0.000001:
