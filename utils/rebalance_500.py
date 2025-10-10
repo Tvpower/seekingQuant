@@ -49,6 +49,19 @@ def rebalance_portfolio(account_id=""):
             app.disconnect()
             return
         
+        # Recalculate market values using real-time prices
+        print("\n--- Fetching Real-Time Prices for Accurate Market Values ---")
+        for symbol, data in positions.items():
+            # Fetch current market price
+            price = app.get_current_price(symbol)
+            if price is not None:
+                data['current_price'] = price
+                data['market_value'] = data['position'] * price
+                print(f"{symbol}: {data['position']:.4f} shares @ ${price:.2f} = ${data['market_value']:.2f}")
+            else:
+                # Keep cost basis as fallback
+                print(f"{symbol}: Could not fetch price, using cost basis")
+        
         print(f"\n--- Current Portfolio Holdings ({len(positions)} stocks) ---")
         for symbol, data in positions.items():
             print(f"{symbol:6} | Market Value: ${data['market_value']:8.2f} | "
@@ -94,16 +107,24 @@ def rebalance_portfolio(account_id=""):
             for item in buys:
                 symbol = item['symbol']
                 amount = item['amount']
-                print(f"\n{symbol}: Current ${item['current_value']:.2f} -> Target ${int(os.getenv('TARGET_VALUE_PER_STOCK')):.2f}")
+                target = int(os.getenv('TARGET_VALUE_PER_STOCK'))
+                print(f"\n{symbol}: Current ${item['current_value']:.2f} -> Target ${target:.2f}")
                 print(f"Buying ${amount:.2f} worth...")
                 
                 try:
-                    app.place_dollar_order(symbol, "BUY", amount, use_market=True, whole_shares_only=True, account=account_id)
+                    app.place_dollar_order(
+                        symbol, "BUY", amount, 
+                        use_market=True, 
+                        whole_shares_only=True, 
+                        account=account_id,
+                        current_value=item['current_value'],
+                        target_value=target
+                    )
                     movements.append({
                         'symbol': symbol,
                         'action': 'BUY',
                         'current_value': item['current_value'],
-                        'target_value': int(os.getenv('TARGET_VALUE_PER_STOCK')),
+                        'target_value': target,
                         'amount': amount,
                         'reason': 'Below target value'
                     })
@@ -114,7 +135,7 @@ def rebalance_portfolio(account_id=""):
                         'symbol': symbol,
                         'action': 'BUY_FAILED',
                         'current_value': item['current_value'],
-                        'target_value': int(os.getenv('TARGET_VALUE_PER_STOCK')),
+                        'target_value': target,
                         'amount': amount,
                         'reason': f'Error: {str(e)}'
                     })
@@ -125,16 +146,24 @@ def rebalance_portfolio(account_id=""):
             for item in sells:
                 symbol = item['symbol']
                 amount = item['amount']
-                print(f"\n{symbol}: Current ${item['current_value']:.2f} -> Target ${int(os.getenv('TARGET_VALUE_PER_STOCK')):.2f}")
+                target = int(os.getenv('TARGET_VALUE_PER_STOCK'))
+                print(f"\n{symbol}: Current ${item['current_value']:.2f} -> Target ${target:.2f}")
                 print(f"Selling ${amount:.2f} worth...")
                 
                 try:
-                    app.place_dollar_order(symbol, "SELL", amount, use_market=True, whole_shares_only=True, account=account_id)
+                    app.place_dollar_order(
+                        symbol, "SELL", amount, 
+                        use_market=True, 
+                        whole_shares_only=True, 
+                        account=account_id,
+                        current_value=item['current_value'],
+                        target_value=target
+                    )
                     movements.append({
                         'symbol': symbol,
                         'action': 'SELL',
                         'current_value': item['current_value'],
-                        'target_value': int(os.getenv('TARGET_VALUE_PER_STOCK')),
+                        'target_value': target,
                         'amount': amount,
                         'reason': 'Above target value'
                     })
@@ -145,7 +174,7 @@ def rebalance_portfolio(account_id=""):
                         'symbol': symbol,
                         'action': 'SELL_FAILED',
                         'current_value': item['current_value'],
-                        'target_value': int(os.getenv('TARGET_VALUE_PER_STOCK')),
+                        'target_value': target,
                         'amount': amount,
                         'reason': f'Error: {str(e)}'
                     })
