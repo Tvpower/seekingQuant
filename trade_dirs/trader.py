@@ -162,7 +162,7 @@ class IBKR_API(EWrapper, EClient):
         
         return self.positions
 
-    def place_dollar_order(self, symbol, action, amount, use_market=False, whole_shares_only=False, account=""):
+    def place_dollar_order(self, symbol, action, amount, use_market=False, whole_shares_only=False, round_up=False, account=""):
         """Places an order for a specific dollar amount.
 
         Args:
@@ -170,7 +170,8 @@ class IBKR_API(EWrapper, EClient):
             action: 'BUY' or 'SELL'
             amount: Dollar amount to trade
             use_market: If True, uses MKT order (RTH only). If False, uses LMT order with outsideRth
-            whole_shares_only: If True, rounds down to whole shares (no fractional)
+            whole_shares_only: If True, rounds to whole shares (no fractional)
+            round_up: If True and whole_shares_only=True, rounds up instead of down
             account: Account ID to place order for (required for multiple accounts)
         """
         if self.nextOrderId is None:
@@ -212,7 +213,11 @@ class IBKR_API(EWrapper, EClient):
 
         # Calculate quantity based on dollar amount
         if whole_shares_only:
-            quantity = int(amount / self.current_price)  # Round down to whole shares
+            import math
+            if round_up:
+                quantity = math.ceil(amount / self.current_price)  # Round up to whole shares
+            else:
+                quantity = int(amount / self.current_price)  # Round down to whole shares
             if quantity < 1:
                 print(f"Calculated quantity is less than 1 share for {symbol} (price: ${self.current_price:.2f}), skipping order")
                 return
